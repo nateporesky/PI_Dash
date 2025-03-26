@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FastAPI Frontend</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        input, button { margin: 5px; }
+        #output { margin-top: 20px; white-space: pre-wrap; }
+    </style>
+</head>
+<body>
+    <h1>FastAPI Frontend</h1>
+
+    <h2>Login</h2>
+    <input type="text" id="username" placeholder="Username">
+    <input type="password" id="password" placeholder="Password">
+    <button onclick="login()">Login</button>
+
+    <h2>User Info</h2>
+    <button onclick="getUserInfo()">Get User Info</button>
+    <h2>Members</h2>
+    <button onclick="getMembers()">Get Members</button>
+
+    <h2>Summary</h2>
+    <button onclick="getSummary()">Get Summary</button>
+
+    <div id="output"></div>
+
+    <script>
+        let token = '';
+
+        async function login() {
+            const username = document.getElementById('username').value;
+            const password = document.getElementById('password').value;
+            const response = await fetch('http://localhost:8000/token', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                body: new URLSearchParams({
+                    username: username,
+                    password: password
+                })
+            });
+            const data = await response.json();
+            if (response.ok) {
+                token = data.access_token;
+                document.getElementById('output').textContent = 'Login successful!';
+            } else {
+                document.getElementById('output').textContent = 'Login failed: ' + data.detail;
+            }
+        }
+
+        async function getUserInfo() {
+            if (!token) return alert('Please login first');
+            const response = await fetch('http://localhost:8000/users/me/', {
+                headers: { 'Authorization': 'Bearer ' + token }
+            });
+            const data = await response.json();
+            document.getElementById('output').textContent = JSON.stringify(data, null, 2);
+        }
+
+        async function getMembers() {
+            if (!token) return alert('Please login first');
+            const response = await fetch('http://localhost:8000/api/v2/members/', {
+                headers: { 'Authorization': 'Bearer ' + token }
+            });
+            const data = await response.json();
+            document.getElementById('output').textContent = JSON.stringify(data, null, 2);
+        }
+
+        async function getSummary() {
+            if (!token) return alert('Please login first');
+            const response = await fetch('http://localhost:8000/api/v2/summary/', {
+                headers: { 'Authorization': 'Bearer ' + token }
+            });
+            const data = await response.json();
+            document.getElementById('output').textContent = JSON.stringify(data, null, 2);
+        }
+    </script>
+</body>
+</html>
