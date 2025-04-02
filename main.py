@@ -102,34 +102,40 @@ class SummaryHistoryDB(Base):
 Base.metadata.create_all(bind=engine)
 
 def init_db():
-    """Initialize database with hardcoded users and quota data, preventing duplicates."""
+    """Reinitialize users and quota data (but preserve logs/history)."""
     db = SessionLocal()
-    
-    # Check if users exist before inserting
-    existing_users = {user.username for user in db.query(UserDB.username).all()}  # Fetch existing usernames
-    
+
+    #Delete existing users and quotas (preserve login/summary history)
+    db.query(QuotaDB).delete()
+    db.query(UserDB).delete()
+    db.commit()
+
+    #Recreate users
     test_users = [
-    UserDB(username="amy", email="amy@example.com", hashed_password=pwd_context.hash("password123")),
-    UserDB(username="bob", email="bob@example.com", hashed_password=pwd_context.hash("securepass")),
-    UserDB(username="admin", email="admin@example.com", hashed_password=pwd_context.hash("adminpass"), is_admin=True),
+        {"username": "amy", "email": "amy@example.com", "password": "password123", "is_admin": False},
+        {"username": "bob", "email": "bob@example.com", "password": "securepass", "is_admin": False},
+        {"username": "admin", "email": "admin@example.com", "password": "adminpass", "is_admin": True},
     ]
 
-    for user in test_users:
-        if user.username not in existing_users:  # Avoid duplicates
-            db.add(user)
+    for user_data in test_users:
+        new_user = UserDB(
+            username=user_data["username"],
+            email=user_data["email"],
+            hashed_password=pwd_context.hash(user_data["password"]),
+            is_admin=user_data["is_admin"]
+        )
+        db.add(new_user)
 
-    # Check if quotas exist before inserting
-    existing_quotas = db.query(QuotaDB).count()  # If table is empty, insert data
-    
-    if existing_quotas == 0:  # Only insert if table is empty
-        test_quotas = [
-            QuotaDB(pi_name="amy", student_name="tom", usage=1, soft_limit=20, hard_limit=25, files=13),
-            QuotaDB(pi_name="amy", student_name="amy", usage=3, soft_limit=20, hard_limit=25, files=13),
-            QuotaDB(pi_name="amy", student_name="mary", usage=12, soft_limit=20, hard_limit=25, files=1401),
-            QuotaDB(pi_name="bob", student_name="alice", usage=5, soft_limit=15, hard_limit=30, files=8),
-        ]
-        for quota in test_quotas:
-            db.add(quota)
+    #Recreate quotas
+    test_quotas = [
+        QuotaDB(pi_name="amy", student_name="tom", usage=19.6, soft_limit=20, hard_limit=25, files=13),
+        QuotaDB(pi_name="amy", student_name="amy", usage=10.8, soft_limit=20, hard_limit=25, files=13),
+        QuotaDB(pi_name="amy", student_name="mary", usage=12, soft_limit=20, hard_limit=25, files=1401),
+        QuotaDB(pi_name="bob", student_name="alice", usage=14.7, soft_limit=15, hard_limit=30, files=8),
+    ]
+
+    for quota in test_quotas:
+        db.add(quota)
 
     db.commit()
     db.close()
@@ -229,18 +235,27 @@ async def get_current_active_user(current_user: UserDB = Depends(get_current_use
 # API Endpoints
 
 @app.post("/token", response_model=Token)
-async def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
+async def login_for_access_token(
+    form_data: OAuth2PasswordRequestForm = Depends(),
+    db: Session = Depends(get_db)
+):
     """Authenticate user, log the login, and return JWT token"""
     user = authenticate_user(db, form_data.username, form_data.password)
 
-    if user:
-        logger.info(f"User {user.username} authenticated successfully at {datetime.now(timezone.utc)}")
+    if not user:
+        raise HTTPException(status_code=401, detail="Invalid credentials")
 
-        # Log the login timestamp
-        log_login(db, user.username)
+    # Log fresh login
+    log_login(db, user.username)
 
+    # Force a fresh user pull (optional, for freshness)
+    db.refresh(user)
+
+    # Create access token
     access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
-    access_token = create_access_token(data={"sub": user.username}, expires_delta=access_token_expires)
+    access_token = create_access_token(
+        data={"sub": user.username}, expires_delta=access_token_expires
+    )
 
     return {
         "access_token": access_token,
@@ -252,16 +267,28 @@ async def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(
 
 
 @app.post("/api/login", response_model=Token)
-async def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
-    """Authenticate user and return JWT token"""
+async def api_login(
+    form_data: OAuth2PasswordRequestForm = Depends(),
+    db: Session = Depends(get_db)
+):
+    """Authenticate user and return JWT token with fresh DB check"""
     user = authenticate_user(db, form_data.username, form_data.password)
-    
-    if user:
-        logger.info(f"User {user.username} authenticated successfully at {datetime.now(timezone.utc)}")
+
+    if not user:
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+
+    logger.info(f"User {user.username} authenticated successfully at {datetime.now(timezone.utc)}")
+
+    # Log the login timestamp
+    log_login(db, user.username)
+
+    # Ensure freshest state of the user object
+    db.refresh(user)
 
     access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
-    access_token = create_access_token(data={"sub": user.username}, expires_delta=access_token_expires)
-
+    access_token = create_access_token(
+        data={"sub": user.username}, expires_delta=access_token_expires
+    )
 
     return {
         "access_token": access_token,
@@ -353,13 +380,16 @@ async def get_summary(current_user: UserDB = Depends(get_current_active_user), d
 
     usages = [quota.usage for quota in quotas]
 
+    total_usage = round(sum(usages), 2)
+    average_usage = round(total_usage / len(usages), 2) if usages else 0
+
     summary_data = {
-        "PI": current_user.username,
-        "Number of Users": len(usages),
-        "Total Usage": sum(usages),
-        "Usage Average": sum(usages) / len(usages) if usages else 0,
-        "Max Individual Usage": max(usages)
-    }
+    "PI": current_user.username,
+    "Number of Users": len(usages),
+    "Total Usage": round(total_usage, 1),
+    "Usage Average": round(average_usage, 1),
+    "Max Individual Usage": round(max(usages))
+        }
 
     # Log the summary request in the database
     summary_entry = SummaryHistoryDB(
