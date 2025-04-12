@@ -165,17 +165,16 @@ def load_barchart(token, is_admin, selected_pis):
             pi_soft_limit = sum(stats["soft"] for stats in members.values())
             pi_remaining = max(0, pi_soft_limit - pi_usage)
             usage_percent = (pi_usage / pi_soft_limit) * 100 if pi_soft_limit else 0
-
-            color = "red" if usage_percent >= 95 else "blue"
-            if usage_percent >= 95:
-                warnings.append(f"PI '{pi}' is at {round(usage_percent)}% of their total soft limit.")
-
             pi_summaries.append({
                 "PI": pi,
                 "Usage": pi_usage,
-                "Remaining": pi_remaining,
-                "Color": color
-            })
+                "Remaining": max(0, pi_soft_limit - pi_usage),
+                "Color": "red" if usage_percent >= 95 else "blue",
+                "Hover": f"PI: {pi}<br>Usage: {pi_usage} GB<br>Soft Limit: {pi_soft_limit}"
+                })
+            if usage_percent >= 95:
+                warnings.append(f"PI '{pi}' is at {round(usage_percent)}% of their total soft limit.")
+            
 
         if not pi_summaries:
             return html.Div("No usage data found.")
@@ -188,8 +187,8 @@ def load_barchart(token, is_admin, selected_pis):
                 y=[pi["Usage"]],
                 name="Usage",
                 marker_color=pi["Color"],
-                hovertext=f"{pi['PI']}: {pi['Usage']} GB used",
-                hoverinfo="text+y"
+                hovertext=pi["Hover"],
+                hoverinfo="text"
             ))
 
             fig.add_trace(go.Bar(
@@ -198,7 +197,7 @@ def load_barchart(token, is_admin, selected_pis):
                 name="Remaining",
                 marker_color="lightgray",
                 hovertext=f"{pi['PI']}: {pi['Remaining']} GB remaining",
-                hoverinfo="text+y"
+                hoverinfo="text"
             ))
 
         fig.update_layout(
